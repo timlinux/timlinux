@@ -217,7 +217,6 @@ Retired unicyclist | Amateur sheep farmer | Portuguese language learner
 
 ---
 
-*This profile is maintained using [tailor](https://github.com/wimpysworld/tailor) by [@wimpysworld](https://github.com/wimpysworld)*
 
 **Made with love by [Kartoza](https://kartoza.com)**
 
