@@ -1,0 +1,186 @@
+name: Repo Health Scanner
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # Daily at 6 AM
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  scan-repos:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      security-events: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan Repository Health
+        env:
+          GH_TOKEN: ${{ secrets.METRICS_TOKEN }}
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          echo "Scanning timlinux repositories..."
+
+          # Initialize counters
+          total_repos=0
+          repos_with_ci=0
+          ci_passing=0
+          ci_failing=0
+          repos_with_vulnerabilities=0
+          critical_cves=0
+          high_cves=0
+          repos_with_license=0
+          repos_archived=0
+          repos_active=0
+
+          # Get all source repos (not forks)
+          repos=$(gh repo list timlinux --source --limit 500 --json name,isArchived,licenseInfo,hasIssuesEnabled --jq '.[] | @base64')
+
+          for repo_b64 in $repos; do
+            repo_json=$(echo "$repo_b64" | base64 -d)
+            repo_name=$(echo "$repo_json" | jq -r '.name')
+            is_archived=$(echo "$repo_json" | jq -r '.isArchived')
+            has_license=$(echo "$repo_json" | jq -r '.licenseInfo != null')
+
+            ((total_repos++)) || true
+
+            if [[ "$is_archived" == "true" ]]; then
+              ((repos_archived++)) || true
+            else
+              ((repos_active++)) || true
+            fi
+
+            if [[ "$has_license" == "true" ]]; then
+              ((repos_with_license++)) || true
+            fi
+
+            # Check CI status (latest workflow run)
+            ci_status=$(gh api "repos/timlinux/$repo_name/actions/runs?per_page=1" --jq '.workflow_runs[0].conclusion // "none"' 2>/dev/null || echo "none")
+
+            if [[ "$ci_status" != "none" ]]; then
+              ((repos_with_ci++)) || true
+              if [[ "$ci_status" == "success" ]]; then
+                ((ci_passing++)) || true
+              elif [[ "$ci_status" == "failure" ]]; then
+                ((ci_failing++)) || true
+              fi
+            fi
+
+            # Check for security vulnerabilities (Dependabot alerts)
+            vuln_count=$(gh api "repos/timlinux/$repo_name/dependabot/alerts?state=open&per_page=100" --jq 'length' 2>/dev/null || echo "0")
+
+            if [[ "$vuln_count" -gt 0 ]]; then
+              ((repos_with_vulnerabilities++)) || true
+
+              # Count by severity
+              critical=$(gh api "repos/timlinux/$repo_name/dependabot/alerts?state=open&severity=critical" --jq 'length' 2>/dev/null || echo "0")
+              high=$(gh api "repos/timlinux/$repo_name/dependabot/alerts?state=open&severity=high" --jq 'length' 2>/dev/null || echo "0")
+
+              ((critical_cves += critical)) || true
+              ((high_cves += high)) || true
+            fi
+
+            echo "Scanned: $repo_name (CI: $ci_status, Vulns: $vuln_count)"
+          done
+
+          # Calculate percentages
+          if [[ $repos_with_ci -gt 0 ]]; then
+            ci_health_pct=$((ci_passing * 100 / repos_with_ci))
+          else
+            ci_health_pct=0
+          fi
+
+          if [[ $total_repos -gt 0 ]]; then
+            license_pct=$((repos_with_license * 100 / total_repos))
+          else
+            license_pct=0
+          fi
+
+          # Determine badge colors
+          if [[ $ci_health_pct -ge 90 ]]; then ci_color="brightgreen"
+          elif [[ $ci_health_pct -ge 70 ]]; then ci_color="green"
+          elif [[ $ci_health_pct -ge 50 ]]; then ci_color="yellow"
+          else ci_color="red"; fi
+
+          if [[ $critical_cves -eq 0 ]]; then cve_color="brightgreen"
+          elif [[ $critical_cves -le 5 ]]; then cve_color="yellow"
+          else cve_color="red"; fi
+
+          if [[ $license_pct -ge 80 ]]; then license_color="brightgreen"
+          elif [[ $license_pct -ge 50 ]]; then license_color="yellow"
+          else license_color="orange"; fi
+
+          # Generate JSON data file
+          cat > assets/repo-health.json << EOF
+          {
+            "generated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "total_repos": $total_repos,
+            "active_repos": $repos_active,
+            "archived_repos": $repos_archived,
+            "repos_with_ci": $repos_with_ci,
+            "ci_passing": $ci_passing,
+            "ci_failing": $ci_failing,
+            "ci_health_pct": $ci_health_pct,
+            "repos_with_vulnerabilities": $repos_with_vulnerabilities,
+            "critical_cves": $critical_cves,
+            "high_cves": $high_cves,
+            "repos_with_license": $repos_with_license,
+            "license_pct": $license_pct,
+            "badges": {
+              "ci_status": "https://img.shields.io/badge/CI_Passing-${ci_passing}%2F${repos_with_ci}-${ci_color}?style=for-the-badge&logo=githubactions",
+              "critical_cves": "https://img.shields.io/badge/Critical_CVEs-${critical_cves}-${cve_color}?style=for-the-badge&logo=dependabot",
+              "high_cves": "https://img.shields.io/badge/High_CVEs-${high_cves}-${cve_color}?style=for-the-badge&logo=dependabot",
+              "licensed": "https://img.shields.io/badge/Licensed-${license_pct}%25-${license_color}?style=for-the-badge&logo=opensourceinitiative",
+              "active_repos": "https://img.shields.io/badge/Active_Repos-${repos_active}-blue?style=for-the-badge&logo=github"
+            }
+          }
+          EOF
+
+          echo ""
+          echo "=== Repository Health Summary ==="
+          echo "Total repos: $total_repos"
+          echo "Active repos: $repos_active"
+          echo "Archived repos: $repos_archived"
+          echo "Repos with CI: $repos_with_ci"
+          echo "CI Passing: $ci_passing ($ci_health_pct%)"
+          echo "CI Failing: $ci_failing"
+          echo "Repos with vulnerabilities: $repos_with_vulnerabilities"
+          echo "Critical CVEs: $critical_cves"
+          echo "High CVEs: $high_cves"
+          echo "Repos with license: $repos_with_license ($license_pct%)"
+
+      - name: Update README with Health Badges
+        env:
+          GH_TOKEN: ${{ secrets.METRICS_TOKEN }}
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          # Read the generated data
+          data=$(cat assets/repo-health.json)
+
+          ci_badge=$(echo "$data" | jq -r '.badges.ci_status')
+          cve_badge=$(echo "$data" | jq -r '.badges.critical_cves')
+          high_cve_badge=$(echo "$data" | jq -r '.badges.high_cves')
+          license_badge=$(echo "$data" | jq -r '.badges.licensed')
+          active_badge=$(echo "$data" | jq -r '.badges.active_repos')
+
+          # Update the health badges section in README
+          # Using markers to identify the section to update
+          if grep -q "<!-- REPO-HEALTH-BADGES:START -->" README.md; then
+            # Update existing section
+            sed -i '/<!-- REPO-HEALTH-BADGES:START -->/,/<!-- REPO-HEALTH-BADGES:END -->/c\<!-- REPO-HEALTH-BADGES:START -->\n![]('$ci_badge')\n![]('$cve_badge')\n![]('$high_cve_badge')\n![]('$license_badge')\n![]('$active_badge')\n<!-- REPO-HEALTH-BADGES:END -->' README.md
+          fi
+
+          echo "README updated with health badges"
+
+      - name: Commit and Push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add assets/repo-health.json README.md || true
+          git diff --staged --quiet || git commit -m "Update repo health stats"
+          git push || true
