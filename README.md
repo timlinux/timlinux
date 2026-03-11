@@ -96,6 +96,7 @@ Terminal apps and games built with Go:
 - **[go-fireworks](https://github.com/timlinux/go-fireworks)** - Terminal fireworks with particle physics
 - **[macaco](https://github.com/timlinux/macaco)** - MoCaCo: Vim motion training game
 - **[baboon](https://github.com/timlinux/baboon)** - Terminal typing practice with ASCII art
+- **[cheetah](https://github.com/timlinux/cheetah)** - RSVP speed reading (1000+ WPM)
 - **[kartoza-screencaster](https://github.com/kartoza/kartoza-screencaster)** - Screencast recording tool
 - **[go-timesheets-go](https://github.com/kartoza/go-timesheets-go)** - Timesheet management
 - **[gatus-monitor](https://github.com/kartoza/gatus-monitor)** - Service monitoring dashboard
